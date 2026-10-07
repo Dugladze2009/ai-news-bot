@@ -18,6 +18,7 @@ FEEDS = [
                                                                                                        "color": 0xD97757, "emoji": "🟠"},
     {"name": "Meta AI",            "url": "https://ai.meta.com/blog/", "type": "html",
      "pattern": r'href="(?:https://ai\.meta\.com)?(/blog/[a-z0-9][a-z0-9\-]+/?)"', "base": "https://ai.meta.com",
+     "fallback": {"url": "https://about.fb.com/feed/", "type": "rss", "filter": AI_WORDS},
                                                                                                        "color": 0x0866FF, "emoji": "🟣"},
     {"name": "Mistral AI",         "url": "https://mistral.ai/news", "type": "html",
      "pattern": r'href="(?:https://mistral\.ai)?(/news/[a-z0-9][a-z0-9\-]+/?)"', "base": "https://mistral.ai",
@@ -38,8 +39,8 @@ FEEDS = [
     {"name": "TechCrunch AI",      "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "color": 0x0A9E01, "emoji": "📰", "filter": BIG},
     {"name": "MIT Technology Review","url": "https://www.technologyreview.com/topic/artificial-intelligence/feed", "color": 0xE5112E, "emoji": "📰"},
     {"name": "The Verge AI",       "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "color": 0x5200FF, "emoji": "📰", "filter": BIG},
-    {"name": "Hacker News",        "url": "https://hnrss.org/newest?q=AI+OR+LLM+OR+OpenAI+OR+Anthropic+OR+Claude+OR+Gemini+OR+GPT&points=150",
-                                                                                                       "color": 0xFF6600, "emoji": "🟠", "filter": AI_WORDS},
+    {"name": "Hacker News",        "url": "https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=points%3E150&hitsPerPage=60",
+     "type": "hn",                                                                                     "color": 0xFF6600, "emoji": "🟠", "filter": AI_WORDS},
 ]
 
 WEBHOOK      = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -56,6 +57,8 @@ MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოს�
 FULL_ARTICLE = os.environ.get("FULL_ARTICLE", "0") == "1"         # 1 = მთლიანი სტატია, 0 = მოკლე შეჯამება
 MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "9000"))  # ინგლისური ტექსტის ლიმიტი
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+HEADERS = {"User-Agent": UA, "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+           "Accept-Language": "en-US,en;q=0.9"}
 CHUNK = 3900  # Discord embed description limit is 4096
 
 def clean(text, limit=3000):
@@ -185,7 +188,7 @@ def fetch_article(url):
     try:
         import trafilatura
         from urllib.parse import urljoin
-        r = requests.get(url, timeout=25, headers={"User-Agent": UA})
+        r = requests.get(url, timeout=25, headers=HEADERS)
         r.raise_for_status()
         txt = trafilatura.extract(r.text, output_format="markdown", include_links=False,
                                   include_images=False, include_tables=False, favor_precision=True)
@@ -376,8 +379,25 @@ class Entry(dict):
         except KeyError: raise AttributeError(k)
 
 def fetch_entries(feed):
-    r = requests.get(feed["url"], timeout=25, headers={"User-Agent": UA})
+    """აბრუნებს (entries, filter). fallback-ის შემთხვევაში მისი ფილტრი გამოიყენება."""
+    try:
+        return _fetch(feed), feed.get("filter")
+    except Exception as e:
+        fb = feed.get("fallback")
+        if not fb: raise
+        print(f"  ! {feed['name']}: {e} → ვცდი სათადარიგო წყაროს")
+        return _fetch({**feed, **fb}), fb.get("filter", feed.get("filter"))
+
+def _fetch(feed):
+    r = requests.get(feed["url"], timeout=40, headers=HEADERS)
     r.raise_for_status()
+    if feed.get("type") == "hn":
+        out = []
+        for h in r.json().get("hits", []):
+            url = h.get("url") or f"https://news.ycombinator.com/item?id={h['objectID']}"
+            out.append(Entry(link=url, title=h.get("title") or "", summary=clean(h.get("story_text") or "", 1000),
+                             published_parsed=time.gmtime(h.get("created_at_i") or time.time())))
+        return out
     if feed.get("type") == "html":
         links = []
         for path in re.findall(feed["pattern"], r.text):
@@ -390,7 +410,7 @@ def fill_from_page(e):
     """HTML წყაროს სტატიისთვის: სათაური და სურათი თავად გვერდიდან."""
     if e.get("title"): return
     try:
-        h = requests.get(e.link, timeout=25, headers={"User-Agent": UA}).text
+        h = requests.get(e.link, timeout=25, headers=HEADERS).text
         m = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', h) or re.search(r"<title[^>]*>(.*?)</title>", h, re.S | re.I)
         e["title"] = clean(m.group(1), 200) if m else e.link
         m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', h)
@@ -400,8 +420,8 @@ def fill_from_page(e):
     except Exception as ex:
         print(f"  ! page meta failed: {ex}"); e["title"] = e.link
 
-def passes_filter(feed, e):
-    words = feed.get("filter")
+def passes_filter(feed, e, words=None):
+    words = words if words is not None else feed.get("filter")
     if not words: return True
     hay = f"{e.get('title','')} {clean(e.get('summary','') or '', 1000)}"
     return any(re.search(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", hay, re.I if w != "AI" else 0) for w in words)
@@ -439,7 +459,7 @@ def run_test(url):
     feed = next((f for f in FEEDS if host in f["url"]), {"name": host, "color": 0x5B6CFF, "emoji": "🧪"})
     title = ""
     try:
-        r = requests.get(url, timeout=25, headers={"User-Agent": UA})
+        r = requests.get(url, timeout=25, headers=HEADERS)
         m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
         title = clean(m.group(1), 200) if m else url
     except Exception as ex:
@@ -457,13 +477,14 @@ def main():
     new_items, feed_links = [], {}
     for feed in FEEDS:
         try:
-            entries = fetch_entries(feed)
+            entries, flt = fetch_entries(feed)
         except Exception as e:
             print(f"! {feed['name']}: {e}"); continue
         print(f"{feed['name']}: {len(entries)} entries")
         known = set(seen.get(feed["name"], []))
         feed_links[feed["name"]] = [e.link for e in entries]
-        if first_run or feed["name"] not in seen:
+        reseed = known and entries and not any(e.link in known for e in entries)
+        if first_run or feed["name"] not in seen or reseed:
             # ახალი წყარო: ყველაფერი "ნანახად" ინიშნება და არაფერი იპოსტება
             seen[feed["name"]] = [e.link for e in entries]
             print(f"  (ახალი წყარო — {len(entries)} სტატია მოინიშნა ნანახად)")
@@ -475,7 +496,7 @@ def main():
                 known.add(e.link); continue
             if feed.get("type") == "html":
                 fill_from_page(e)
-            if not passes_filter(feed, e):
+            if not passes_filter(feed, e, flt):
                 known.add(e.link); continue
             new_items.append((feed, e))
         seen[feed["name"]] = list(known)
