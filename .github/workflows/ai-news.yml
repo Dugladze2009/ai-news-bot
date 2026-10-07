@@ -10,6 +10,10 @@ on:
         description: "ტესტი: ჩასვი ერთი სტატიის ლინკი (ცარიელი = ჩვეულებრივი გაშვება)"
         required: false
         default: ""
+      daily:
+        description: "დღის სიახლეები სათაურით (1 = კი)"
+        required: false
+        default: "0"
       backfill_days:
         description: "ბოლო რამდენი დღის სიახლეები დაიპოსტოს (0 = ჩვეულებრივი გაშვება)"
         required: false
@@ -44,7 +48,7 @@ jobs:
           BACKFILL_DAYS: ${{ github.event.inputs.backfill_days }}
           MAX_POSTS_PER_RUN: "40"
           MAX_AGE_DAYS: "1.5"
-          DAILY_HEADER: ${{ github.event.schedule == '55 17 * * *' && '1' || '0' }}
+          DAILY_HEADER: ${{ (github.event.schedule == '55 17 * * *' || github.event.inputs.daily == '1') && '1' || '0' }}
         run: python bot.py
       - name: Save state
         run: |
