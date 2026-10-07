@@ -5,11 +5,29 @@ AI & Tech Hub [GE] — AI News Bot
 import os, re, json, html, time, calendar
 import feedparser, requests
 
+BIG = ["OpenAI", "ChatGPT", "GPT", "Anthropic", "Claude", "Google", "Gemini", "DeepMind", "Meta", "Llama",
+       "Microsoft", "Copilot", "NVIDIA", "Apple", "xAI", "Grok", "Mistral", "DeepSeek", "Qwen", "Hugging Face", "Perplexity"]
+AI_WORDS = ["AI", "A.I.", "LLM", "LLMs", "GPT", "Claude", "Gemini", "model", "models", "agent", "agents", "neural",
+            "machine learning", "deep learning", "Copilot", "chatbot", "generative", "transformer", "reasoning"]
+
 FEEDS = [
-    {"name": "OpenAI",          "url": "https://openai.com/news/rss.xml",                        "color": 0x10A37F, "emoji": "🟢"},
-    {"name": "Google DeepMind", "url": "https://deepmind.google/blog/rss.xml",                    "color": 0x4285F4, "emoji": "🔵"},
-    {"name": "Google AI",       "url": "https://blog.google/innovation-and-ai/technology/ai/rss/", "color": 0x34A853, "emoji": "🔵"},
-    {"name": "Hugging Face",    "url": "https://huggingface.co/blog/feed.xml",                   "color": 0xFFD21E, "emoji": "🤗"},
+    # --- ოფიციალური ---
+    {"name": "OpenAI",             "url": "https://openai.com/news/rss.xml",                          "color": 0x10A37F, "emoji": "🟢"},
+    {"name": "Anthropic",          "url": "https://www.anthropic.com/news", "type": "html",
+     "pattern": r'href="(?:https://www\.anthropic\.com)?(/news/[a-z0-9][a-z0-9\-]+)"', "base": "https://www.anthropic.com",
+                                                                                                       "color": 0xD97757, "emoji": "🟠"},
+    {"name": "Google DeepMind",    "url": "https://deepmind.google/blog/rss.xml",                     "color": 0x4285F4, "emoji": "🔵"},
+    {"name": "Google AI",          "url": "https://blog.google/innovation-and-ai/technology/ai/rss/", "color": 0x34A853, "emoji": "🔵"},
+    {"name": "Hugging Face",       "url": "https://huggingface.co/blog/feed.xml",                     "color": 0xFFD21E, "emoji": "🤗"},
+    {"name": "NVIDIA",             "url": "https://blogs.nvidia.com/feed/",                           "color": 0x76B900, "emoji": "🟩"},
+    {"name": "Microsoft Research", "url": "https://www.microsoft.com/en-us/research/feed/",           "color": 0x00A4EF, "emoji": "🟦", "filter": AI_WORDS},
+    {"name": "AWS Machine Learning","url": "https://aws.amazon.com/blogs/machine-learning/feed/",      "color": 0xFF9900, "emoji": "🟧"},
+    # --- ახალი ამბები (ფილტრით) ---
+    {"name": "TechCrunch AI",      "url": "https://techcrunch.com/category/artificial-intelligence/feed/", "color": 0x0A9E01, "emoji": "📰", "filter": BIG},
+    {"name": "MIT Technology Review","url": "https://www.technologyreview.com/topic/artificial-intelligence/feed", "color": 0xE5112E, "emoji": "📰"},
+    {"name": "The Verge AI",       "url": "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml", "color": 0x5200FF, "emoji": "📰", "filter": BIG},
+    {"name": "Hacker News",        "url": "https://hnrss.org/newest?q=AI+OR+LLM+OR+OpenAI+OR+Anthropic+OR+Claude+OR+Gemini+OR+GPT&points=150",
+                                                                                                       "color": 0xFF6600, "emoji": "🟠", "filter": AI_WORDS},
 ]
 
 WEBHOOK      = os.environ.get("DISCORD_WEBHOOK_URL", "")
@@ -310,6 +328,44 @@ def post(feed, entry, ka_title, ka_summary, ka_why=""):
     send(payload)
     return True
 
+# ---------- წყაროები ----------
+class Entry(dict):
+    """feedparser-ის entry-ს მსგავსი ობიექტი HTML წყაროებისთვის."""
+    def __getattr__(self, k):
+        try: return self[k]
+        except KeyError: raise AttributeError(k)
+
+def fetch_entries(feed):
+    r = requests.get(feed["url"], timeout=25, headers={"User-Agent": UA})
+    r.raise_for_status()
+    if feed.get("type") == "html":
+        links = []
+        for path in re.findall(feed["pattern"], r.text):
+            url = feed["base"] + path
+            if url not in links: links.append(url)
+        return [Entry(link=u, title="", summary="") for u in links]
+    return [e for e in feedparser.parse(r.content).entries if e.get("link")]
+
+def fill_from_page(e):
+    """HTML წყაროს სტატიისთვის: სათაური და სურათი თავად გვერდიდან."""
+    if e.get("title"): return
+    try:
+        h = requests.get(e.link, timeout=25, headers={"User-Agent": UA}).text
+        m = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', h) or re.search(r"<title[^>]*>(.*?)</title>", h, re.S | re.I)
+        e["title"] = clean(m.group(1), 200) if m else e.link
+        m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', h)
+        if m: e["media_content"] = [{"url": html.unescape(m.group(1))}]
+        m = re.search(r'<meta[^>]+(?:name|property)="(?:og:)?description"[^>]+content="([^"]+)"', h)
+        if m: e["summary"] = html.unescape(m.group(1))
+    except Exception as ex:
+        print(f"  ! page meta failed: {ex}"); e["title"] = e.link
+
+def passes_filter(feed, e):
+    words = feed.get("filter")
+    if not words: return True
+    hay = f"{e.get('title','')} {clean(e.get('summary','') or '', 1000)}"
+    return any(re.search(r"(?<![A-Za-z])" + re.escape(w) + r"(?![A-Za-z])", hay, re.I if w != "AI" else 0) for w in words)
+
 # ---------- main ----------
 def process(feed, e):
     if GEMINI_DOWN and not ANTHROPIC_KEY:
@@ -361,23 +417,25 @@ def main():
     new_items, feed_links = [], {}
     for feed in FEEDS:
         try:
-            r = requests.get(feed["url"], timeout=25, headers={"User-Agent": UA})
-            r.raise_for_status()
-            d = feedparser.parse(r.content)
+            entries = fetch_entries(feed)
         except Exception as e:
             print(f"! {feed['name']}: {e}"); continue
-        print(f"{feed['name']}: {len(d.entries)} entries")
+        print(f"{feed['name']}: {len(entries)} entries")
         known = set(seen.get(feed["name"], []))
-        entries = [e for e in d.entries if e.get("link")]
         feed_links[feed["name"]] = [e.link for e in entries]
-        if first_run:
-            # პირველ გაშვებაზე ყველაფერი "ნანახად" ინიშნება და არაფერი იპოსტება
+        if first_run or feed["name"] not in seen:
+            # ახალი წყარო: ყველაფერი "ნანახად" ინიშნება და არაფერი იპოსტება
             seen[feed["name"]] = [e.link for e in entries]
+            print(f"  (ახალი წყარო — {len(entries)} სტატია მოინიშნა ნანახად)")
             continue
         for e in entries:
             if e.link in known: continue
             ts = e.get("published_parsed") or e.get("updated_parsed")
             if ts and time.time() - calendar.timegm(ts) > MAX_AGE_DAYS * 86400:
+                known.add(e.link); continue
+            if feed.get("type") == "html":
+                fill_from_page(e)
+            if not passes_filter(feed, e):
                 known.add(e.link); continue
             new_items.append((feed, e))
         seen[feed["name"]] = list(known)

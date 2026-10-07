@@ -1,6 +1,6 @@
 # 🤖 AI News Bot — AI & Tech Hub [GE]
 
-ოფიციალური AI ბლოგებიდან (OpenAI, Google DeepMind, Google AI, Hugging Face) ახალ სტატიებს
+AI წყაროებიდან (OpenAI, Anthropic, Google DeepMind, Google AI, Hugging Face, NVIDIA, Microsoft Research, AWS ML, TechCrunch AI, MIT Technology Review, The Verge AI, Hacker News) ახალ სტატიებს
 ყოველ 30 წუთში ამოწმებს, **ქართულად აჯამებს** (მოკლედ + რატომ არის მნიშვნელოვანი) და Discord-ის #ai-news არხში პოსტავს.
 მუშაობს უფასოდ, GitHub Actions-ზე — კომპიუტერი ჩართული არ უნდა იყოს.
 
@@ -34,6 +34,8 @@ https://aistudio.google.com/apikey → **Create API key** → დააკოპ
 პირველ გაშვებაზე თითო წყაროდან ბოლო სტატიას დაპოსტავს (სატესტოდ), შემდეგ კი მხოლოდ ახლებს.
 
 ## წყაროს დამატება
+ახალი წყარო პირველ გაშვებაზე ჩუმად აღირიცხება (ძველ სტატიებს არ დაპოსტავს), მერე მხოლოდ ახლებს.
+`"filter": BIG` — მხოლოდ დიდ კომპანიებზე სიახლეები, `"filter": AI_WORDS` — მხოლოდ AI თემები.
 `bot.py`-ში `FEEDS` სიაში დაამატე ხაზი:
 ```python
 {"name": "სახელი", "url": "https://.../rss.xml", "color": 0xFF0000, "emoji": "🔴"},
