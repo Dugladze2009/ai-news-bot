@@ -52,13 +52,14 @@ def clean(text, limit=3000):
 
 # ---------- ქართული შეჯამება ----------
 PROMPT = """You are the news editor of a Georgian Discord community about AI.
-Write a short Georgian news post about this official AI announcement.
-Return ONLY JSON: {{"title": "...", "summary": "...", "why": "..."}}
+Write a Georgian news post about this AI announcement.
+Return ONLY JSON: {{"title": "...", "text": "..."}}
 - "title": natural Georgian headline, max 90 characters.
-- "summary": 2-4 short, simple Georgian sentences: what exactly was announced (max 450 characters).
-- "why": 1-2 Georgian sentences: why this matters for people/developers/the AI field (max 250 characters).
+- "text": 5-7 clear Georgian sentences (600-900 characters), split into 2-3 short paragraphs with an empty line between them.
+  First explain what exactly was announced and the key details (numbers, features, availability).
+  End with what this means in practice — for users, developers or the AI field — woven naturally into the text (no labels like "why it matters").
 - Keep product, model, company and person names in English.
-- Plain, clear language. No hype, no emojis, no invented facts — only what the text says.
+- Plain, clear language. No hype, no emojis, no headings, no invented facts — only what the text says.
 
 Source: {source}
 Title: {title}
@@ -67,12 +68,13 @@ Text: {text}"""
 def parse_json(s):
     m = re.search(r"\{.*\}", s, re.S)
     d = json.loads(m.group(0))
-    return d["title"].strip(), d["summary"].strip(), (d.get("why") or "").strip()
+    body = (d.get("text") or d.get("summary") or "").strip()
+    return d["title"].strip(), body
 
 def via_anthropic(p):
     r = requests.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
         "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
-        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600, "messages": [{"role": "user", "content": p}]})
+        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 2000, "messages": [{"role": "user", "content": p}]})
     if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return parse_json(r.json()["content"][0]["text"])
 
@@ -135,15 +137,15 @@ def gemini_call(p, json_mode, max_tokens):
     raise RuntimeError(f"all Gemini models failed ({last})")
 
 def via_gemini(p):
-    return parse_json(gemini_call(p, True, 2000))
+    return parse_json(gemini_call(p, True, 4000))
 
 def via_translate(title, text):
     from deep_translator import GoogleTranslator
     tr = GoogleTranslator(source="auto", target="ka")
-    summary = text[:450]
-    if len(text) > 450:
+    summary = text[:800]
+    if len(text) > 800:
         summary = summary.rsplit(" ", 1)[0] + "…"
-    return tr.translate(title), (tr.translate(summary) if summary else ""), ""
+    return tr.translate(title), (tr.translate(summary) if summary else "")
 
 def to_georgian(source, title, text):
     p = PROMPT.format(source=source, title=title, text=text[:6000])
@@ -159,14 +161,34 @@ def to_georgian(source, title, text):
     return None
 
 # ---------- მთლიანი სტატია ----------
+ARTICLE_IMAGES = {}   # link -> [image urls]
+
+def _good_img(u):
+    lu = u.lower()
+    return (u.startswith("http") and not lu.split("?")[0].endswith((".svg", ".gif"))
+            and not any(b in lu for b in ("logo", "icon", "avatar", "favicon", "sprite", "badge", "emoji", "1x1", "pixel")))
+
 def fetch_article(url):
-    """სტატიის გვერდიდან მთავარი ტექსტის ამოღება (markdown-ის მსგავსად)."""
+    """სტატიის გვერდიდან მთავარი ტექსტი + ფოტოები (og:image და სტატიის შიგნით არსებული)."""
     try:
         import trafilatura
+        from urllib.parse import urljoin
         r = requests.get(url, timeout=25, headers={"User-Agent": UA})
         r.raise_for_status()
         txt = trafilatura.extract(r.text, output_format="markdown", include_links=False,
                                   include_images=False, include_tables=False, favor_precision=True)
+        imgs = []
+        m = re.search(r'<meta[^>]+property="og:image"[^>]+content="([^"]+)"', r.text) or \
+            re.search(r'<meta[^>]+content="([^"]+)"[^>]+property="og:image"', r.text)
+        if m: imgs.append(urljoin(url, html.unescape(m.group(1))))
+        with_imgs = trafilatura.extract(r.text, output_format="markdown", include_images=True,
+                                        include_links=False, favor_recall=True) or ""
+        for u in re.findall(r"!\[[^\]]*\]\(([^)\s]+)", with_imgs):
+            imgs.append(urljoin(url, html.unescape(u)))
+        out = []
+        for u in imgs:
+            if _good_img(u) and u not in out: out.append(u)
+        ARTICLE_IMAGES[url] = out[:4]
         return (txt or "").strip()
     except Exception as e:
         print(f"  ! article fetch failed: {e}")
@@ -302,12 +324,9 @@ def post_full(feed, entry, ka_title, body):
         time.sleep(1.2)
     return True
 
-def post(feed, entry, ka_title, ka_summary, ka_why=""):
+def post(feed, entry, ka_title, ka_text):
     ts = entry.get("published_parsed") or entry.get("updated_parsed")
-    desc = f"📌 **მოკლედ**\n{ka_summary}"
-    if ka_why:
-        desc += f"\n\n💡 **რატომ არის მნიშვნელოვანი**\n{ka_why}"
-    desc += f"\n\n🔗 **წყარო:** [{feed['name']} — ორიგინალი სტატია]({entry.link})"
+    desc = f"{ka_text}\n\n🔗 **წყარო:** [{feed['name']} — ორიგინალი სტატია]({entry.link})"
     embed = {
         "author": {"name": f"🤖 AI NEWS · {feed['emoji']} {feed['name']}"},
         "title": ("📰 " + ka_title)[:256],
@@ -317,9 +336,18 @@ def post(feed, entry, ka_title, ka_summary, ka_why=""):
         "footer": {"text": "AI & Tech Hub [GE] • AI-ის სიახლეები ქართულად"},
     }
     if ts: embed["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", ts)
-    img = image_of(entry)
-    if img: embed["image"] = {"url": img}
-    payload = {"username": "AI News 🇬🇪", "embeds": [embed], "allowed_mentions": {"parse": []}}
+    imgs = list(ARTICLE_IMAGES.get(entry.link, []))
+    feed_img = image_of(entry)
+    if feed_img and feed_img not in imgs: imgs.insert(0, feed_img)
+    imgs = imgs[:4]
+    embeds = [embed]
+    if imgs:
+        embed["image"] = {"url": imgs[0]}
+        # Discord აჩვენებს გალერეად, თუ embed-ებს ერთი და იგივე url აქვთ (მაქს. 4 ფოტო)
+        for u in imgs[1:]:
+            embeds.append({"url": entry.link, "image": {"url": u}})
+    print(f"  images: {len(imgs)}")
+    payload = {"username": "AI News 🇬🇪", "embeds": embeds, "allowed_mentions": {"parse": []}}
     if ROLE_ID:
         payload["content"] = f"<@&{ROLE_ID}>"
         payload["allowed_mentions"] = {"roles": [ROLE_ID]}
