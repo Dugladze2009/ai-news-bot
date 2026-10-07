@@ -97,7 +97,7 @@ def gemini_models():
         return ("lite" in n, "preview" in n, not n.endswith("latest"), [-int(x) for x in re.findall(r"\d+", n)])
     names = sorted(set(names), key=rank)
     _GEMINI_MODELS = [GEMINI_MODEL] + [n for n in names if n != GEMINI_MODEL]
-    _GEMINI_MODELS = _GEMINI_MODELS[:6]
+    _GEMINI_MODELS = _GEMINI_MODELS[:4]
     print(f"  gemini models: {', '.join(_GEMINI_MODELS)}")
     return _GEMINI_MODELS
 
@@ -107,11 +107,11 @@ def gemini_call(p, json_mode, max_tokens):
     if json_mode: cfg["responseMimeType"] = "application/json"
     last = None
     for model in gemini_models():
-        for attempt, wait in enumerate((0, 8, 20)):
+        for attempt, wait in enumerate((0, 6)):
             if wait: time.sleep(wait)
             try:
                 r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                                  timeout=100, headers={"x-goog-api-key": GEMINI_KEY},
+                                  timeout=(10, 45 if max_tokens <= 4000 else 90), headers={"x-goog-api-key": GEMINI_KEY},
                                   json={"contents": [{"parts": [{"text": p}]}], "generationConfig": cfg})
             except requests.RequestException as e:
                 last = f"{model}: {e}"; print(f"  ! {last}"); continue
