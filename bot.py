@@ -55,7 +55,8 @@ BACKFILL_DAYS= int(os.environ.get("BACKFILL_DAYS", "0") or 0)   # ბოლო N
 BACKFILL_MAX = int(os.environ.get("BACKFILL_MAX", "40"))   # Run workflow → ერთი კონკრეტული სტატიის ტესტი   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
 MAX_POSTS    = int(os.environ.get("MAX_POSTS_PER_RUN", "5"))
 STATE_FILE   = os.environ.get("STATE_FILE", "seen.json")
-MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოსტავთ
+MAX_AGE_DAYS = float(os.environ.get("MAX_AGE_DAYS", "3"))   # ძველ სტატიებს არ ვპოსტავთ
+DAILY_HEADER = os.environ.get("DAILY_HEADER") == "1"         # დღის სიახლეების სათაური
 FULL_ARTICLE = os.environ.get("FULL_ARTICLE", "0") == "1"         # 1 = მთლიანი სტატია, 0 = მოკლე შეჯამება
 MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "9000"))  # ინგლისური ტექსტის ლიმიტი
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -528,6 +529,16 @@ def main():
     new_items.sort(key=lambda x: calendar.timegm(x[1].get("published_parsed") or time.gmtime(0)))
     posted = 0
     limit = BACKFILL_MAX if BACKFILL_DAYS else MAX_POSTS
+    if DAILY_HEADER and new_items and not DRY_RUN:
+        months = ["იანვარი","თებერვალი","მარტი","აპრილი","მაისი","ივნისი","ივლისი","აგვისტო","სექტემბერი","ოქტომბერი","ნოემბერი","დეკემბერი"]
+        t = time.gmtime(time.time() + 4 * 3600)   # საქართველოს დრო
+        try:
+            send({"username": "AI News 🇬🇪", "allowed_mentions": {"parse": []}, "embeds": [{
+                "title": f"📰 დღის AI სიახლეები — {t.tm_mday} {months[t.tm_mon-1]}",
+                "description": f"ბოლო 24 საათის მთავარი სიახლეები AI-ის სამყაროდან ქართულად 🇬🇪\n**{min(len(new_items), limit)}** სიახლე 👇",
+                "color": 0x5B6CFF}]})
+        except Exception as ex:
+            print(f"! header failed: {ex}")
     if BACKFILL_DAYS:
         print(f"backfill: {len(new_items)} სიახლე ბოლო {BACKFILL_DAYS} დღეში, ვპოსტავ მაქს. {limit}")
         new_items = new_items[-limit:]   # ყველაზე ახლები, ძველიდან ახლისკენ

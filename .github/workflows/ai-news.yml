@@ -2,7 +2,8 @@ name: AI News → Discord
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # ყოველ 15 წუთში
+    - cron: "55 5 * * *"     # ყოველდღე 09:55 საქართველოს დროით (GitHub-ის დაყოვნების გათვალისწინებით ~10:00)
+    - cron: "35 6 * * *"     # 10:35 — სათადარიგო: თუ რამე გამოტოვდა (Gemini დაკავებული იყო)
   workflow_dispatch:          # ხელით გაშვება GitHub-იდან
     inputs:
       test_url:
@@ -41,6 +42,9 @@ jobs:
           FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '0' }}
           TEST_URL: ${{ github.event.inputs.test_url }}
           BACKFILL_DAYS: ${{ github.event.inputs.backfill_days }}
+          MAX_POSTS_PER_RUN: "40"
+          MAX_AGE_DAYS: "1.5"
+          DAILY_HEADER: ${{ github.event.schedule == '55 5 * * *' && '1' || '0' }}
         run: python bot.py
       - name: Save state
         run: |
