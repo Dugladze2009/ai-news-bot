@@ -54,5 +54,15 @@ jobs:
         run: |
           git config user.name "ai-news-bot"
           git config user.email "ai-news-bot@users.noreply.github.com"
-          git add seen.json
-          git diff --cached --quiet || (git commit -m "update seen.json" && git pull --rebase -q && git push)
+          cp seen.json "$RUNNER_TEMP/mine.json"
+          for i in 1 2 3 4 5; do
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            python merge_state.py "$RUNNER_TEMP/mine.json" seen.json seen.json
+            git add seen.json
+            git diff --cached --quiet && exit 0
+            git commit -q -m "update seen.json"
+            git push -q origin HEAD:main && exit 0
+            sleep $((i * 3))
+          done
+          exit 1

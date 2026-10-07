@@ -298,6 +298,24 @@ def image_of(entry):
     m = re.search(r'<img[^>]+src="([^"]+)"', entry.get("summary", "") or "")
     return m.group(1) if m else None
 
+HEADER_PENDING = DAILY_HEADER
+
+def send_header_once():
+    """დღის სათაური — მხოლოდ პირველი ნამდვილი პოსტის წინ."""
+    global HEADER_PENDING
+    if not HEADER_PENDING: return
+    HEADER_PENDING = False
+    months = ["იანვარი","თებერვალი","მარტი","აპრილი","მაისი","ივნისი","ივლისი","აგვისტო","სექტემბერი","ოქტომბერი","ნოემბერი","დეკემბერი"]
+    t = time.gmtime(time.time() + 4 * 3600)   # საქართველოს დრო
+    try:
+        send({"username": "AI News 🇬🇪", "allowed_mentions": {"parse": []}, "embeds": [{
+            "title": f"📰 დღის AI სიახლეები — {t.tm_mday} {months[t.tm_mon-1]}",
+            "description": "ბოლო 24 საათის მთავარი სიახლეები AI-ის სამყაროდან ქართულად 🇬🇪 👇",
+            "color": 0x5B6CFF}]})
+        time.sleep(1)
+    except Exception as ex:
+        print(f"! header failed: {ex}")
+
 def send(payload, thread_id=None):
     if DRY_RUN or not WEBHOOK:
         print(json.dumps(payload, ensure_ascii=False, indent=2)[:1500]); return {"channel_id": "dry"}
@@ -316,6 +334,7 @@ def post_full(feed, entry, ka_title, body):
     n = len(parts)
     img = image_of(entry)
     thread_id = None
+    send_header_once()
     for i, part in enumerate(parts):
         last = i == n - 1
         embed = {"description": part + (f"\n\n🔗 **[ორიგინალი სტატია]({entry.link})**" if last else ""),
@@ -371,6 +390,7 @@ def post(feed, entry, ka_title, ka_text):
         payload["allowed_mentions"] = {"roles": [ROLE_ID]}
     if FORUM:
         payload["thread_name"] = ka_title[:100]
+    send_header_once()
     send(payload)
     return True
 
@@ -529,16 +549,6 @@ def main():
     new_items.sort(key=lambda x: calendar.timegm(x[1].get("published_parsed") or time.gmtime(0)))
     posted = 0
     limit = BACKFILL_MAX if BACKFILL_DAYS else MAX_POSTS
-    if DAILY_HEADER and new_items and not DRY_RUN:
-        months = ["იანვარი","თებერვალი","მარტი","აპრილი","მაისი","ივნისი","ივლისი","აგვისტო","სექტემბერი","ოქტომბერი","ნოემბერი","დეკემბერი"]
-        t = time.gmtime(time.time() + 4 * 3600)   # საქართველოს დრო
-        try:
-            send({"username": "AI News 🇬🇪", "allowed_mentions": {"parse": []}, "embeds": [{
-                "title": f"📰 დღის AI სიახლეები — {t.tm_mday} {months[t.tm_mon-1]}",
-                "description": f"ბოლო 24 საათის მთავარი სიახლეები AI-ის სამყაროდან ქართულად 🇬🇪\n**{min(len(new_items), limit)}** სიახლე 👇",
-                "color": 0x5B6CFF}]})
-        except Exception as ex:
-            print(f"! header failed: {ex}")
     if BACKFILL_DAYS:
         print(f"backfill: {len(new_items)} სიახლე ბოლო {BACKFILL_DAYS} დღეში, ვპოსტავ მაქს. {limit}")
         new_items = new_items[-limit:]   # ყველაზე ახლები, ძველიდან ახლისკენ
