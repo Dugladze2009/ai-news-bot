@@ -18,9 +18,14 @@ ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY", "").strip()
 GEMINI_KEY   = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
 DRY_RUN      = os.environ.get("DRY_RUN") == "1"
+FORUM        = os.environ.get("FORUM_CHANNEL") == "1"   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
 MAX_POSTS    = int(os.environ.get("MAX_POSTS_PER_RUN", "5"))
 STATE_FILE   = os.environ.get("STATE_FILE", "seen.json")
 MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოსტავთ
+FULL_ARTICLE = os.environ.get("FULL_ARTICLE", "1") == "1"         # მთლიანი სტატიის თარგმნა
+MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "9000"))  # ინგლისური ტექსტის ლიმიტი
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+CHUNK = 3900  # Discord embed description limit is 4096
 
 def clean(text, limit=3000):
     text = html.unescape(re.sub(r"<[^>]+>", " ", text or ""))
@@ -75,6 +80,100 @@ def to_georgian(source, title, text):
     except Exception as e: print(f"  ! translate failed: {e}")
     return title, text[:400]
 
+# ---------- მთლიანი სტატია ----------
+def fetch_article(url):
+    """სტატიის გვერდიდან მთავარი ტექსტის ამოღება (markdown-ის მსგავსად)."""
+    try:
+        import trafilatura
+        r = requests.get(url, timeout=25, headers={"User-Agent": UA})
+        r.raise_for_status()
+        txt = trafilatura.extract(r.text, output_format="markdown", include_links=False,
+                                  include_images=False, include_tables=False, favor_precision=True)
+        return (txt or "").strip()
+    except Exception as e:
+        print(f"  ! article fetch failed: {e}")
+        return ""
+
+FULL_PROMPT = """You are the news editor of a Georgian Discord community about AI.
+Translate this official AI article into natural, fluent Georgian for Discord.
+Rules:
+- First line: the Georgian headline only (max 90 characters). Then one empty line. Then the article body.
+- Translate the WHOLE article faithfully; do not add facts or opinions. You may drop boilerplate (cookie notices, "share this", author bios, footnotes, legal text).
+- Keep product, model, company and person names in English.
+- Formatting: Discord markdown only. Section headings as **bold** on their own line. Lists with "• ". Short paragraphs. No # headings, no tables, no links.
+- Output only the translation, nothing else.
+
+Source: {source}
+Original title: {title}
+
+Article:
+{text}"""
+
+def split_title_body(out, fallback_title):
+    out = out.strip().strip("`").strip()
+    lines = out.split("\n", 1)
+    title = lines[0].strip().strip("*#").strip()
+    body = lines[1].strip() if len(lines) > 1 else ""
+    if not body or len(title) > 150:
+        return fallback_title, out
+    return title, body
+
+def full_via_anthropic(p):
+    r = requests.post("https://api.anthropic.com/v1/messages", timeout=180, headers={
+        "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+        json={"model": "claude-haiku-4-5-20251001", "max_tokens": 16000, "messages": [{"role": "user", "content": p}]})
+    r.raise_for_status()
+    return r.json()["content"][0]["text"]
+
+def full_via_gemini(p):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    r = requests.post(url, timeout=180, headers={"x-goog-api-key": GEMINI_KEY},
+        json={"contents": [{"parts": [{"text": p}]}], "generationConfig": {"maxOutputTokens": 32000}})
+    r.raise_for_status()
+    parts = r.json()["candidates"][0]["content"]["parts"]
+    return "".join(x.get("text", "") for x in parts if not x.get("thought"))
+
+def full_via_translate(title, text):
+    from deep_translator import GoogleTranslator
+    tr = GoogleTranslator(source="auto", target="ka")
+    out, buf = [], ""
+    for para in text.split("\n"):
+        if len(buf) + len(para) > 4000:
+            out.append(tr.translate(buf) or ""); buf = ""
+        buf += para + "\n"
+    if buf.strip(): out.append(tr.translate(buf) or "")
+    return tr.translate(title), "\n".join(out).strip()
+
+def translate_full(source, title, article):
+    text = article[:MAX_SOURCE_CHARS]
+    if len(article) > MAX_SOURCE_CHARS:
+        text = text.rsplit("\n", 1)[0]
+    p = FULL_PROMPT.format(source=source, title=title, text=text)
+    for name, fn in (("anthropic", full_via_anthropic if ANTHROPIC_KEY else None),
+                     ("gemini", full_via_gemini if GEMINI_KEY else None)):
+        if fn:
+            try:
+                out = fn(p)
+                if out and len(out) > 200: return split_title_body(out, title)
+            except Exception as e: print(f"  ! {name} full failed: {e}")
+    try: return full_via_translate(title, text)
+    except Exception as e: print(f"  ! translate full failed: {e}")
+    return None
+
+def chunks(text, size=CHUNK):
+    """ტექსტის დაყოფა აბზაცების მიხედვით, თითო ნაწილი <= size."""
+    parts, cur = [], ""
+    for para in text.split("\n"):
+        while len(para) > size:            # ძალიან გრძელი აბზაცი
+            cut = para[:size].rsplit(" ", 1)[0] or para[:size]
+            if cur: parts.append(cur.rstrip()); cur = ""
+            parts.append(cut); para = para[len(cut):].lstrip()
+        if len(cur) + len(para) + 1 > size:
+            parts.append(cur.rstrip()); cur = ""
+        cur += para + "\n"
+    if cur.strip(): parts.append(cur.rstrip())
+    return [p for p in parts if p.strip()]
+
 # ---------- Discord ----------
 def image_of(entry):
     for key in ("media_content", "media_thumbnail"):
@@ -85,6 +184,50 @@ def image_of(entry):
             return l.get("href")
     m = re.search(r'<img[^>]+src="([^"]+)"', entry.get("summary", "") or "")
     return m.group(1) if m else None
+
+def send(payload, thread_id=None):
+    if DRY_RUN or not WEBHOOK:
+        print(json.dumps(payload, ensure_ascii=False, indent=2)[:1500]); return {"channel_id": "dry"}
+    url = WEBHOOK + "?wait=true" + (f"&thread_id={thread_id}" if thread_id else "")
+    for _ in range(4):
+        r = requests.post(url, json=payload, timeout=30)
+        if r.status_code == 429:
+            time.sleep(float(r.json().get("retry_after", 2)) + 0.5); continue
+        r.raise_for_status(); return r.json()
+    raise RuntimeError("rate limited")
+
+def post_full(feed, entry, ka_title, body):
+    """სრული სტატია: პირველი embed სათაურით და სურათით, შემდეგ გაგრძელება."""
+    ts = entry.get("published_parsed") or entry.get("updated_parsed")
+    parts = chunks(body)
+    n = len(parts)
+    img = image_of(entry)
+    thread_id = None
+    for i, part in enumerate(parts):
+        last = i == n - 1
+        embed = {"description": part + (f"\n\n🔗 **[ორიგინალი სტატია]({entry.link})**" if last else ""),
+                 "color": feed["color"]}
+        if i == 0:
+            embed.update({"author": {"name": f"{feed['emoji']} {feed['name']} · ოფიციალური განცხადება"},
+                          "title": ka_title[:256], "url": entry.link})
+            if img: embed["image"] = {"url": img}
+        if n > 1:
+            embed["footer"] = {"text": f"ნაწილი {i+1}/{n} • AI & Tech Hub [GE]"}
+        else:
+            embed["footer"] = {"text": "AI & Tech Hub [GE]"}
+        if last and ts: embed["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", ts)
+        payload = {"username": "AI News 🇬🇪", "embeds": [embed], "allowed_mentions": {"parse": []}}
+        if i == 0:
+            if ROLE_ID:
+                payload["content"] = f"<@&{ROLE_ID}>"
+                payload["allowed_mentions"] = {"roles": [ROLE_ID]}
+            if FORUM:
+                payload["thread_name"] = ka_title[:100]
+        res = send(payload, thread_id)
+        if i == 0 and FORUM:
+            thread_id = res.get("channel_id")
+        time.sleep(1.2)
+    return True
 
 def post(feed, entry, ka_title, ka_summary):
     ts = entry.get("published_parsed") or entry.get("updated_parsed")
@@ -103,14 +246,8 @@ def post(feed, entry, ka_title, ka_summary):
     if ROLE_ID:
         payload["content"] = f"<@&{ROLE_ID}>"
         payload["allowed_mentions"] = {"roles": [ROLE_ID]}
-    if DRY_RUN or not WEBHOOK:
-        print(json.dumps(payload, ensure_ascii=False, indent=2)); return True
-    for _ in range(3):
-        r = requests.post(WEBHOOK, json=payload, timeout=30)
-        if r.status_code == 429:
-            time.sleep(float(r.json().get("retry_after", 2))); continue
-        r.raise_for_status(); return True
-    return False
+    send(payload)
+    return True
 
 # ---------- main ----------
 def main():
@@ -120,7 +257,9 @@ def main():
     new_items = []
     for feed in FEEDS:
         try:
-            d = feedparser.parse(feed["url"], agent="Mozilla/5.0 (AI-Tech-Hub-GE news bot)")
+            r = requests.get(feed["url"], timeout=25, headers={"User-Agent": UA})
+            r.raise_for_status()
+            d = feedparser.parse(r.content)
         except Exception as e:
             print(f"! {feed['name']}: {e}"); continue
         print(f"{feed['name']}: {len(d.entries)} entries")
@@ -145,9 +284,19 @@ def main():
         if posted >= MAX_POSTS: break   # დანარჩენი შემდეგ გაშვებაზე
         title, text = clean(e.get("title", ""), 300), clean(e.get("summary", "") or e.get("description", ""))
         print(f"→ {feed['name']}: {title}")
-        ka_title, ka_summary = to_georgian(feed["name"], title, text or title)
         try:
-            ok = post(feed, e, ka_title, ka_summary)
+            ok = False
+            if FULL_ARTICLE:
+                article = fetch_article(e.link)
+                if len(article) < 300 and len(text) > len(article):
+                    article = text            # გვერდი ვერ წავიკითხეთ → RSS-ის ტექსტი
+                print(f"  article: {len(article)} chars")
+                res = translate_full(feed["name"], title, article) if len(article) >= 200 else None
+                if res:
+                    ok = post_full(feed, e, res[0], res[1])
+            if not ok:
+                ka_title, ka_summary = to_georgian(feed["name"], title, text or title)
+                ok = post(feed, e, ka_title, ka_summary)
         except Exception as ex:
             print(f"  ! post failed: {ex}"); ok = False
         if ok:
