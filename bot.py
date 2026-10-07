@@ -55,12 +55,66 @@ def via_anthropic(p):
     if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return parse_json(r.json()["content"][0]["text"])
 
+_GEMINI_MODELS = None
+GEMINI_DOWN = False   # თუ ამ გაშვებაში Gemini სრულად ჩავარდა, დანარჩენ სტატიებს შემდეგ ჯერზე ვცდით
+def gemini_models():
+    """ხელმისაწვდომი Gemini მოდელების სია: ჯერ არჩეული, მერე სხვა Flash მოდელები."""
+    global _GEMINI_MODELS
+    if _GEMINI_MODELS is not None: return _GEMINI_MODELS
+    names = []
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+                         timeout=20, headers={"x-goog-api-key": GEMINI_KEY})
+        for m in r.json().get("models", []):
+            n = m["name"].split("/", 1)[-1]
+            if "generateContent" not in m.get("supportedGenerationMethods", []): continue
+            if "flash" not in n or any(b in n for b in ("image", "tts", "audio", "live", "embedding", "exp", "thinking")): continue
+            names.append(n)
+    except Exception as e:
+        print(f"  ! model list failed: {e}")
+    def rank(n):   # latest-ალიასები → სტაბილური → preview; lite ბოლოს
+        return ("lite" in n, "preview" in n, not n.endswith("latest"), [-int(x) for x in re.findall(r"\d+", n)])
+    names = sorted(set(names), key=rank)
+    _GEMINI_MODELS = [GEMINI_MODEL] + [n for n in names if n != GEMINI_MODEL]
+    _GEMINI_MODELS = _GEMINI_MODELS[:6]
+    print(f"  gemini models: {', '.join(_GEMINI_MODELS)}")
+    return _GEMINI_MODELS
+
+def gemini_call(p, json_mode, max_tokens):
+    """ცდის რამდენიმე მოდელს; 503/429/timeout-ზე ელოდება და თავიდან ცდის."""
+    cfg = {"maxOutputTokens": max_tokens}
+    if json_mode: cfg["responseMimeType"] = "application/json"
+    last = None
+    for model in gemini_models():
+        for attempt, wait in enumerate((0, 8, 20)):
+            if wait: time.sleep(wait)
+            try:
+                r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                                  timeout=100, headers={"x-goog-api-key": GEMINI_KEY},
+                                  json={"contents": [{"parts": [{"text": p}]}], "generationConfig": cfg})
+            except requests.RequestException as e:
+                last = f"{model}: {e}"; print(f"  ! {last}"); continue
+            if r.status_code in (429, 500, 503, 504):
+                last = f"{model}: HTTP {r.status_code}"; print(f"  ! {last} (ვცდი თავიდან)"); continue
+            if r.status_code >= 400:
+                last = f"{model}: HTTP {r.status_code}: {r.text[:200]}"; print(f"  ! {last}"); break  # სხვა მოდელზე
+            try:
+                parts = r.json()["candidates"][0]["content"]["parts"]
+                out = "".join(x.get("text", "") for x in parts if not x.get("thought")).strip()
+                if out:
+                    print(f"  ✓ translated with {model}")
+                    return out
+                last = f"{model}: empty response"
+            except Exception as e:
+                last = f"{model}: bad response {e}"
+            print(f"  ! {last}")
+            break
+    global GEMINI_DOWN
+    GEMINI_DOWN = True
+    raise RuntimeError(f"all Gemini models failed ({last})")
+
 def via_gemini(p):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    r = requests.post(url, timeout=60, headers={"x-goog-api-key": GEMINI_KEY},
-        json={"contents": [{"parts": [{"text": p}]}], "generationConfig": {"responseMimeType": "application/json"}})
-    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-    return parse_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
+    return parse_json(gemini_call(p, True, 2000))
 
 def via_translate(title, text):
     from deep_translator import GoogleTranslator
@@ -77,9 +131,11 @@ def to_georgian(source, title, text):
         if fn:
             try: return fn(p)
             except Exception as e: print(f"  ! {name} failed: {e}")
-    try: return via_translate(title, text)
+    try:
+        t = via_translate(title, text)
+        if t and t[0] and t[0] != title: return t
     except Exception as e: print(f"  ! translate failed: {e}")
-    return title, text[:400]
+    return None
 
 # ---------- მთლიანი სტატია ----------
 def fetch_article(url):
@@ -127,12 +183,7 @@ def full_via_anthropic(p):
     return r.json()["content"][0]["text"]
 
 def full_via_gemini(p):
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    r = requests.post(url, timeout=120, headers={"x-goog-api-key": GEMINI_KEY},
-        json={"contents": [{"parts": [{"text": p}]}], "generationConfig": {"maxOutputTokens": 32000}})
-    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    return "".join(x.get("text", "") for x in parts if not x.get("thought"))
+    return gemini_call(p, False, 32000)
 
 def full_via_translate(title, text):
     from deep_translator import GoogleTranslator
@@ -252,6 +303,8 @@ def post(feed, entry, ka_title, ka_summary):
 
 # ---------- main ----------
 def process(feed, e):
+    if GEMINI_DOWN and not ANTHROPIC_KEY:
+        return False
     title, text = clean(e.get("title", ""), 300), clean(e.get("summary", "") or e.get("description", ""))
     print(f"→ {feed['name']}: {title}")
     print(f"  translators: anthropic={'yes' if ANTHROPIC_KEY else 'no'} gemini={'yes' if GEMINI_KEY else 'NO KEY'} ({GEMINI_MODEL})")
@@ -264,9 +317,15 @@ def process(feed, e):
         res = translate_full(feed["name"], title, article) if len(article) >= 200 else None
         if res:
             ok = post_full(feed, e, res[0], res[1])
+        elif len(article) >= 200:
+            print("  ✗ სრული თარგმნა ვერ მოხერხდა — არ ვპოსტავ, შემდეგ გაშვებაზე თავიდან ვცდი")
+            return False
     if not ok:
-        ka_title, ka_summary = to_georgian(feed["name"], title, text or title)
-        ok = post(feed, e, ka_title, ka_summary)
+        res = to_georgian(feed["name"], title, text or title)
+        if not res:
+            print("  ✗ თარგმნა ვერ მოხერხდა — არ ვპოსტავ, შემდეგ გაშვებაზე თავიდან ვცდი")
+            return False
+        ok = post(feed, e, res[0], res[1])
     return ok
 
 def run_test(url):
