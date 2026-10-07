@@ -15,6 +15,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -27,6 +28,8 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PING_ROLE_ID: ${{ vars.PING_ROLE_ID }}
+          FORUM_CHANNEL: ${{ vars.FORUM_CHANNEL }}
+          FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '1' }}
         run: python bot.py
       - name: Save state
         run: |

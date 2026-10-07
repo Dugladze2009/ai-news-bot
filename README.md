@@ -1,7 +1,7 @@
 # 🤖 AI News Bot — AI & Tech Hub [GE]
 
 ოფიციალური AI ბლოგებიდან (OpenAI, Google DeepMind, Google AI, Hugging Face) ახალ სტატიებს
-ყოველ 30 წუთში ამოწმებს, **ქართულად** აჯამებს და Discord-ის #ai-news არხში პოსტავს.
+ყოველ 30 წუთში ამოწმებს, **მთლიან სტატიას ქართულად თარგმნის** და Discord-ის #ai-news არხში პოსტავს.
 მუშაობს უფასოდ, GitHub Actions-ზე — კომპიუტერი ჩართული არ უნდა იყოს.
 
 ## დაყენება (10 წუთი)
@@ -24,7 +24,10 @@ https://aistudio.google.com/apikey → **Create API key** → დააკოპ
 - `DISCORD_WEBHOOK_URL` — ნაბიჯი 1-ის ლინკი
 - `GEMINI_API_KEY` — ნაბიჯი 2-ის გასაღები
 
-(არასავალდებულო) **Variables** ტაბში: `PING_ROLE_ID` — 🤖 AI News Ping როლის ID, თუ გინდა რომ ყოველ სიახლეზე ეს როლი დაიპინგოს.
+(არასავალდებულო) **Variables** ტაბში:
+- `FORUM_CHANNEL` = `1` — თუ #ai-news ფორუმ-არხია, თითო სტატია ცალკე პოსტად გაიხსნება
+- `FULL_ARTICLE` = `0` — თუ სრული სტატიის ნაცვლად მოკლე შეჯამება გინდა
+- `PING_ROLE_ID` — 🤖 AI News Ping როლის ID, თუ გინდა რომ ყოველ სიახლეზე ეს როლი დაიპინგოს.
 
 ### 5. გაშვება
 **Actions** ტაბი → თუ ითხოვს, ჩართე workflows → **AI News → Discord** → **Run workflow**.
