@@ -1,6 +1,6 @@
 # 🤖 AI News Bot — AI & Tech Hub [GE]
 
-AI წყაროებიდან (OpenAI, Anthropic, Google DeepMind, Google AI, Hugging Face, NVIDIA, Microsoft Research, AWS ML, TechCrunch AI, MIT Technology Review, The Verge AI, Hacker News) ახალ სტატიებს
+AI წყაროებიდან (OpenAI, Anthropic, Meta AI, Mistral, xAI, DeepSeek, Google DeepMind, Google AI, Hugging Face, NVIDIA, Microsoft Research, AWS ML, TechCrunch AI, MIT Technology Review, The Verge AI, Hacker News) ახალ სტატიებს
 ყოველ 30 წუთში ამოწმებს, **ქართულად აჯამებს** (მოკლედ + რატომ არის მნიშვნელოვანი) და Discord-ის #ai-news არხში პოსტავს.
 მუშაობს უფასოდ, GitHub Actions-ზე — კომპიუტერი ჩართული არ უნდა იყოს.
 
