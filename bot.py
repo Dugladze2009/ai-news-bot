@@ -47,7 +47,7 @@ WEBHOOK      = os.environ.get("DISCORD_WEBHOOK_URL", "")
 ROLE_ID      = os.environ.get("PING_ROLE_ID", "").strip()       # optional: 🤖 AI News Ping role
 ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY", "").strip()
 GEMINI_KEY   = os.environ.get("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()   # lite-ის შემდეგ ეს ცდება
 DRY_RUN      = os.environ.get("DRY_RUN") == "1"
 FORUM        = os.environ.get("FORUM_CHANNEL") == "1"
 TEST_URL     = os.environ.get("TEST_URL", "").strip()
@@ -113,11 +113,11 @@ def gemini_models():
             names.append(n)
     except Exception as e:
         print(f"  ! model list failed: {e}")
-    def rank(n):   # latest-ალიასები → სტაბილური → preview; lite ბოლოს
-        return ("lite" in n, "preview" in n, not n.endswith("latest"), [-int(x) for x in re.findall(r"\d+", n)])
+    def rank(n):   # lite ჯერ (მეტი უფასო ლიმიტი, ნაკლები დატვირთვა) → latest-ალიასები → ახალი ვერსიები → preview ბოლოს
+        return ("lite" not in n, "preview" in n, not n.endswith("latest"), [-int(x) for x in re.findall(r"\d+", n)])
     names = sorted(set(names), key=rank)
-    _GEMINI_MODELS = [GEMINI_MODEL] + [n for n in names if n != GEMINI_MODEL]
-    _GEMINI_MODELS = _GEMINI_MODELS[:4]
+    first = [m for m in ("gemini-flash-lite-latest", GEMINI_MODEL) if m]
+    _GEMINI_MODELS = list(dict.fromkeys(first + names))[:6]
     print(f"  gemini models: {', '.join(_GEMINI_MODELS)}")
     return _GEMINI_MODELS
 
@@ -135,7 +135,9 @@ def gemini_call(p, json_mode, max_tokens):
                                   json={"contents": [{"parts": [{"text": p}]}], "generationConfig": cfg})
             except requests.RequestException as e:
                 last = f"{model}: {e}"; print(f"  ! {last}"); continue
-            if r.status_code in (429, 500, 503, 504):
+            if r.status_code == 429:   # ამ მოდელის ლიმიტი ამოიწურა → მაშინვე შემდეგი მოდელი
+                last = f"{model}: HTTP 429 (ლიმიტი)"; print(f"  ! {last}"); break
+            if r.status_code in (500, 503, 504):
                 last = f"{model}: HTTP {r.status_code}"; print(f"  ! {last} (ვცდი თავიდან)"); continue
             if r.status_code >= 400:
                 last = f"{model}: HTTP {r.status_code}: {r.text[:200]}"; print(f"  ! {last}"); break  # სხვა მოდელზე
