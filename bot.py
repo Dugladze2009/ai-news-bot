@@ -23,7 +23,7 @@ TEST_URL     = os.environ.get("TEST_URL", "").strip()   # Run workflow → ე�
 MAX_POSTS    = int(os.environ.get("MAX_POSTS_PER_RUN", "5"))
 STATE_FILE   = os.environ.get("STATE_FILE", "seen.json")
 MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოსტავთ
-FULL_ARTICLE = os.environ.get("FULL_ARTICLE", "1") == "1"         # მთლიანი სტატიის თარგმნა
+FULL_ARTICLE = os.environ.get("FULL_ARTICLE", "0") == "1"         # 1 = მთლიანი სტატია, 0 = მოკლე შეჯამება
 MAX_SOURCE_CHARS = int(os.environ.get("MAX_SOURCE_CHARS", "9000"))  # ინგლისური ტექსტის ლიმიტი
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 CHUNK = 3900  # Discord embed description limit is 4096
@@ -34,10 +34,13 @@ def clean(text, limit=3000):
 
 # ---------- ქართული შეჯამება ----------
 PROMPT = """You are the news editor of a Georgian Discord community about AI.
-Rewrite this official AI announcement for Georgian readers.
-Return ONLY JSON: {{"title": "...", "summary": "..."}}
-- "title": natural Georgian headline, max 90 characters. Keep product/model/company names in English.
-- "summary": 2-3 short Georgian sentences: what was announced and why it matters. Max 400 characters. No hype, no invented facts — only what the text says.
+Write a short Georgian news post about this official AI announcement.
+Return ONLY JSON: {{"title": "...", "summary": "...", "why": "..."}}
+- "title": natural Georgian headline, max 90 characters.
+- "summary": 2-4 short, simple Georgian sentences: what exactly was announced (max 450 characters).
+- "why": 1-2 Georgian sentences: why this matters for people/developers/the AI field (max 250 characters).
+- Keep product, model, company and person names in English.
+- Plain, clear language. No hype, no emojis, no invented facts — only what the text says.
 
 Source: {source}
 Title: {title}
@@ -46,7 +49,7 @@ Text: {text}"""
 def parse_json(s):
     m = re.search(r"\{.*\}", s, re.S)
     d = json.loads(m.group(0))
-    return d["title"].strip(), d["summary"].strip()
+    return d["title"].strip(), d["summary"].strip(), (d.get("why") or "").strip()
 
 def via_anthropic(p):
     r = requests.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
@@ -122,10 +125,10 @@ def via_translate(title, text):
     summary = text[:450]
     if len(text) > 450:
         summary = summary.rsplit(" ", 1)[0] + "…"
-    return tr.translate(title), (tr.translate(summary) if summary else "")
+    return tr.translate(title), (tr.translate(summary) if summary else ""), ""
 
 def to_georgian(source, title, text):
-    p = PROMPT.format(source=source, title=title, text=text[:2500])
+    p = PROMPT.format(source=source, title=title, text=text[:6000])
     for name, fn in (("anthropic", via_anthropic if ANTHROPIC_KEY else None),
                      ("gemini", via_gemini if GEMINI_KEY else None)):
         if fn:
@@ -281,15 +284,19 @@ def post_full(feed, entry, ka_title, body):
         time.sleep(1.2)
     return True
 
-def post(feed, entry, ka_title, ka_summary):
+def post(feed, entry, ka_title, ka_summary, ka_why=""):
     ts = entry.get("published_parsed") or entry.get("updated_parsed")
+    desc = f"📌 **მოკლედ**\n{ka_summary}"
+    if ka_why:
+        desc += f"\n\n💡 **რატომ არის მნიშვნელოვანი**\n{ka_why}"
+    desc += f"\n\n🔗 **წყარო:** [{feed['name']} — ორიგინალი სტატია]({entry.link})"
     embed = {
-        "author": {"name": f"{feed['emoji']} {feed['name']} · ოფიციალური განცხადება"},
-        "title": ka_title[:256],
+        "author": {"name": f"🤖 AI NEWS · {feed['emoji']} {feed['name']}"},
+        "title": ("📰 " + ka_title)[:256],
         "url": entry.link,
-        "description": f"{ka_summary}\n\n🔗 **[წაიკითხე სრულად]({entry.link})**"[:4000],
+        "description": desc[:4000],
         "color": feed["color"],
-        "footer": {"text": f"AI & Tech Hub [GE] • ორიგინალი: {clean(entry.get('title',''), 150)}"},
+        "footer": {"text": "AI & Tech Hub [GE] • AI-ის სიახლეები ქართულად"},
     }
     if ts: embed["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", ts)
     img = image_of(entry)
@@ -298,6 +305,8 @@ def post(feed, entry, ka_title, ka_summary):
     if ROLE_ID:
         payload["content"] = f"<@&{ROLE_ID}>"
         payload["allowed_mentions"] = {"roles": [ROLE_ID]}
+    if FORUM:
+        payload["thread_name"] = ka_title[:100]
     send(payload)
     return True
 
@@ -309,11 +318,11 @@ def process(feed, e):
     print(f"→ {feed['name']}: {title}")
     print(f"  translators: anthropic={'yes' if ANTHROPIC_KEY else 'no'} gemini={'yes' if GEMINI_KEY else 'NO KEY'} ({GEMINI_MODEL})")
     ok = False
+    article = fetch_article(e.link)
+    print(f"  page text: {len(article)} chars, rss text: {len(text)} chars")
+    if len(article) < 300 and len(text) > len(article):
+        article = text
     if FULL_ARTICLE:
-        article = fetch_article(e.link)
-        print(f"  page text: {len(article)} chars, rss text: {len(text)} chars")
-        if len(article) < 300 and len(text) > len(article):
-            article = text
         res = translate_full(feed["name"], title, article) if len(article) >= 200 else None
         if res:
             ok = post_full(feed, e, res[0], res[1])
@@ -321,11 +330,11 @@ def process(feed, e):
             print("  ✗ სრული თარგმნა ვერ მოხერხდა — არ ვპოსტავ, შემდეგ გაშვებაზე თავიდან ვცდი")
             return False
     if not ok:
-        res = to_georgian(feed["name"], title, text or title)
+        res = to_georgian(feed["name"], title, article or text or title)
         if not res:
             print("  ✗ თარგმნა ვერ მოხერხდა — არ ვპოსტავ, შემდეგ გაშვებაზე თავიდან ვცდი")
             return False
-        ok = post(feed, e, res[0], res[1])
+        ok = post(feed, e, *res)
     return ok
 
 def run_test(url):

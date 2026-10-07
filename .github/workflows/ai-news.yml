@@ -34,7 +34,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PING_ROLE_ID: ${{ vars.PING_ROLE_ID }}
           FORUM_CHANNEL: ${{ vars.FORUM_CHANNEL }}
-          FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '1' }}
+          FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '0' }}
           TEST_URL: ${{ github.event.inputs.test_url }}
         run: python bot.py
       - name: Save state
