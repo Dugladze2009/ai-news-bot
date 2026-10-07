@@ -2,8 +2,13 @@ name: AI News → Discord
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # ყოველ 30 წუთში
-  workflow_dispatch: {}      # ხელით გაშვება GitHub-იდან
+    - cron: "*/15 * * * *"   # ყოველ 15 წუთში
+  workflow_dispatch:          # ხელით გაშვება GitHub-იდან
+    inputs:
+      test_url:
+        description: "ტესტი: ჩასვი ერთი სტატიის ლინკი (ცარიელი = ჩვეულებრივი გაშვება)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -30,6 +35,7 @@ jobs:
           PING_ROLE_ID: ${{ vars.PING_ROLE_ID }}
           FORUM_CHANNEL: ${{ vars.FORUM_CHANNEL }}
           FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '1' }}
+          TEST_URL: ${{ github.event.inputs.test_url }}
         run: python bot.py
       - name: Save state
         run: |

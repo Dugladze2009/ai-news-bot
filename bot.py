@@ -18,7 +18,8 @@ ANTHROPIC_KEY= os.environ.get("ANTHROPIC_API_KEY", "").strip()
 GEMINI_KEY   = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
 DRY_RUN      = os.environ.get("DRY_RUN") == "1"
-FORUM        = os.environ.get("FORUM_CHANNEL") == "1"   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
+FORUM        = os.environ.get("FORUM_CHANNEL") == "1"
+TEST_URL     = os.environ.get("TEST_URL", "").strip()   # Run workflow → ერთი კონკრეტული სტატიის ტესტი   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
 MAX_POSTS    = int(os.environ.get("MAX_POSTS_PER_RUN", "5"))
 STATE_FILE   = os.environ.get("STATE_FILE", "seen.json")
 MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოსტავთ
@@ -51,14 +52,14 @@ def via_anthropic(p):
     r = requests.post("https://api.anthropic.com/v1/messages", timeout=60, headers={
         "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         json={"model": "claude-haiku-4-5-20251001", "max_tokens": 600, "messages": [{"role": "user", "content": p}]})
-    r.raise_for_status()
+    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return parse_json(r.json()["content"][0]["text"])
 
 def via_gemini(p):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     r = requests.post(url, timeout=60, headers={"x-goog-api-key": GEMINI_KEY},
         json={"contents": [{"parts": [{"text": p}]}], "generationConfig": {"responseMimeType": "application/json"}})
-    r.raise_for_status()
+    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return parse_json(r.json()["candidates"][0]["content"]["parts"][0]["text"])
 
 def via_translate(title, text):
@@ -119,17 +120,17 @@ def split_title_body(out, fallback_title):
     return title, body
 
 def full_via_anthropic(p):
-    r = requests.post("https://api.anthropic.com/v1/messages", timeout=180, headers={
+    r = requests.post("https://api.anthropic.com/v1/messages", timeout=120, headers={
         "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
         json={"model": "claude-haiku-4-5-20251001", "max_tokens": 16000, "messages": [{"role": "user", "content": p}]})
-    r.raise_for_status()
+    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     return r.json()["content"][0]["text"]
 
 def full_via_gemini(p):
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
-    r = requests.post(url, timeout=180, headers={"x-goog-api-key": GEMINI_KEY},
+    r = requests.post(url, timeout=120, headers={"x-goog-api-key": GEMINI_KEY},
         json={"contents": [{"parts": [{"text": p}]}], "generationConfig": {"maxOutputTokens": 32000}})
-    r.raise_for_status()
+    if r.status_code >= 400: raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     parts = r.json()["candidates"][0]["content"]["parts"]
     return "".join(x.get("text", "") for x in parts if not x.get("thought"))
 
@@ -250,11 +251,46 @@ def post(feed, entry, ka_title, ka_summary):
     return True
 
 # ---------- main ----------
+def process(feed, e):
+    title, text = clean(e.get("title", ""), 300), clean(e.get("summary", "") or e.get("description", ""))
+    print(f"→ {feed['name']}: {title}")
+    print(f"  translators: anthropic={'yes' if ANTHROPIC_KEY else 'no'} gemini={'yes' if GEMINI_KEY else 'NO KEY'} ({GEMINI_MODEL})")
+    ok = False
+    if FULL_ARTICLE:
+        article = fetch_article(e.link)
+        print(f"  page text: {len(article)} chars, rss text: {len(text)} chars")
+        if len(article) < 300 and len(text) > len(article):
+            article = text
+        res = translate_full(feed["name"], title, article) if len(article) >= 200 else None
+        if res:
+            ok = post_full(feed, e, res[0], res[1])
+    if not ok:
+        ka_title, ka_summary = to_georgian(feed["name"], title, text or title)
+        ok = post(feed, e, ka_title, ka_summary)
+    return ok
+
+def run_test(url):
+    from types import SimpleNamespace
+    host = re.sub(r"^www\.", "", url.split("/")[2])
+    feed = next((f for f in FEEDS if host in f["url"]), {"name": host, "color": 0x5B6CFF, "emoji": "🧪"})
+    title = ""
+    try:
+        r = requests.get(url, timeout=25, headers={"User-Agent": UA})
+        m = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+        title = clean(m.group(1), 200) if m else url
+    except Exception as ex:
+        print(f"! test page fetch failed: {ex}"); title = url
+    e = SimpleNamespace(link=url, title=title)
+    e.get = lambda k, d=None: {"title": title, "link": url}.get(k, d)
+    process(feed, e)
+
 def main():
+    if TEST_URL:
+        run_test(TEST_URL); return
     try: seen = json.load(open(STATE_FILE, encoding="utf-8"))
     except FileNotFoundError: seen = {}
     first_run = not seen
-    new_items = []
+    new_items, feed_links = [], {}
     for feed in FEEDS:
         try:
             r = requests.get(feed["url"], timeout=25, headers={"User-Agent": UA})
@@ -265,10 +301,10 @@ def main():
         print(f"{feed['name']}: {len(d.entries)} entries")
         known = set(seen.get(feed["name"], []))
         entries = [e for e in d.entries if e.get("link")]
+        feed_links[feed["name"]] = [e.link for e in entries]
         if first_run:
-            # პირველ გაშვებაზე: თითო ფიდიდან მხოლოდ ბოლო სტატია, დანარჩენი "ნანახად" ინიშნება
+            # პირველ გაშვებაზე ყველაფერი "ნანახად" ინიშნება და არაფერი იპოსტება
             seen[feed["name"]] = [e.link for e in entries]
-            if entries: new_items.append((feed, entries[0]))
             continue
         for e in entries:
             if e.link in known: continue
@@ -282,29 +318,20 @@ def main():
     posted = 0
     for feed, e in new_items:
         if posted >= MAX_POSTS: break   # დანარჩენი შემდეგ გაშვებაზე
-        title, text = clean(e.get("title", ""), 300), clean(e.get("summary", "") or e.get("description", ""))
-        print(f"→ {feed['name']}: {title}")
         try:
-            ok = False
-            if FULL_ARTICLE:
-                article = fetch_article(e.link)
-                if len(article) < 300 and len(text) > len(article):
-                    article = text            # გვერდი ვერ წავიკითხეთ → RSS-ის ტექსტი
-                print(f"  article: {len(article)} chars")
-                res = translate_full(feed["name"], title, article) if len(article) >= 200 else None
-                if res:
-                    ok = post_full(feed, e, res[0], res[1])
-            if not ok:
-                ka_title, ka_summary = to_georgian(feed["name"], title, text or title)
-                ok = post(feed, e, ka_title, ka_summary)
+            ok = process(feed, e)
         except Exception as ex:
-            print(f"  ! post failed: {ex}"); ok = False
+            print(f"  ! failed: {ex}"); ok = False
         if ok:
             posted += 1
             lst = seen.setdefault(feed["name"], [])
             if e.link not in lst: lst.append(e.link)
             time.sleep(1.5)
-    for k in seen: seen[k] = seen[k][-300:]
+    for k in seen:   # ფიდში არსებული ბმულები არასოდეს იშლება; ძველები 1000-მდე
+        cur = feed_links.get(k, [])
+        posted_or_old = [x for x in seen[k] if x not in set(cur)]
+        keep_cur = [x for x in cur if x in set(seen[k])]
+        seen[k] = keep_cur + posted_or_old[-1000:]
     json.dump(seen, open(STATE_FILE, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"done: {posted} posted")
 
