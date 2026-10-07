@@ -9,6 +9,10 @@ on:
         description: "ტესტი: ჩასვი ერთი სტატიის ლინკი (ცარიელი = ჩვეულებრივი გაშვება)"
         required: false
         default: ""
+      backfill_days:
+        description: "ბოლო რამდენი დღის სიახლეები დაიპოსტოს (0 = ჩვეულებრივი გაშვება)"
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -20,7 +24,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -36,6 +40,7 @@ jobs:
           FORUM_CHANNEL: ${{ vars.FORUM_CHANNEL }}
           FULL_ARTICLE: ${{ vars.FULL_ARTICLE || '0' }}
           TEST_URL: ${{ github.event.inputs.test_url }}
+          BACKFILL_DAYS: ${{ github.event.inputs.backfill_days }}
         run: python bot.py
       - name: Save state
         run: |

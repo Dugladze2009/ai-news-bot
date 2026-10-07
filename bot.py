@@ -50,7 +50,9 @@ GEMINI_KEY   = os.environ.get("GEMINI_API_KEY", "").strip()
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-flash-latest").strip()
 DRY_RUN      = os.environ.get("DRY_RUN") == "1"
 FORUM        = os.environ.get("FORUM_CHANNEL") == "1"
-TEST_URL     = os.environ.get("TEST_URL", "").strip()   # Run workflow → ერთი კონკრეტული სტატიის ტესტი   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
+TEST_URL     = os.environ.get("TEST_URL", "").strip()
+BACKFILL_DAYS= int(os.environ.get("BACKFILL_DAYS", "0") or 0)   # ბოლო N დღის სიახლეების დაპოსტვა
+BACKFILL_MAX = int(os.environ.get("BACKFILL_MAX", "40"))   # Run workflow → ერთი კონკრეტული სტატიის ტესტი   # თუ #ai-news ფორუმ-არხია: თითო სტატია = ცალკე პოსტი
 MAX_POSTS    = int(os.environ.get("MAX_POSTS_PER_RUN", "5"))
 STATE_FILE   = os.environ.get("STATE_FILE", "seen.json")
 MAX_AGE_DAYS = 3   # ძველ სტატიებს არ ვპოსტავთ
@@ -417,6 +419,17 @@ def fill_from_page(e):
         if m: e["media_content"] = [{"url": html.unescape(m.group(1))}]
         m = re.search(r'<meta[^>]+(?:name|property)="(?:og:)?description"[^>]+content="([^"]+)"', h)
         if m: e["summary"] = html.unescape(m.group(1))
+        m = (re.search(r'<meta[^>]+property="article:published_time"[^>]+content="([^"]+)"', h)
+             or re.search(r'"datePublished"\s*:\s*"([^"]+)"', h)
+             or re.search(r'<time[^>]+datetime="([^"]+)"', h))
+        if m:
+            from datetime import datetime, timezone
+            try:
+                dt = datetime.fromisoformat(m.group(1).replace("Z", "+00:00"))
+                if not dt.tzinfo: dt = dt.replace(tzinfo=timezone.utc)
+                e["published_parsed"] = dt.astimezone(timezone.utc).timetuple()
+            except ValueError:
+                pass
     except Exception as ex:
         print(f"  ! page meta failed: {ex}"); e["title"] = e.link
 
@@ -484,6 +497,17 @@ def main():
         known = set(seen.get(feed["name"], []))
         feed_links[feed["name"]] = [e.link for e in entries]
         reseed = known and entries and not any(e.link in known for e in entries)
+        if BACKFILL_DAYS:
+            if feed.get("type") == "html":
+                entries = entries[:8]
+            for e in entries:
+                if feed.get("type") == "html": fill_from_page(e)
+                ts = e.get("published_parsed") or e.get("updated_parsed")
+                if not ts or time.time() - calendar.timegm(ts) > BACKFILL_DAYS * 86400: continue
+                if not passes_filter(feed, e, flt): continue
+                new_items.append((feed, e))
+            seen[feed["name"]] = list(dict.fromkeys(seen.get(feed["name"], []) + [e.link for e in entries]))
+            continue
         if first_run or feed["name"] not in seen or reseed:
             # ახალი წყარო: ყველაფერი "ნანახად" ინიშნება და არაფერი იპოსტება
             seen[feed["name"]] = [e.link for e in entries]
@@ -503,8 +527,12 @@ def main():
     # ძველიდან ახლისკენ
     new_items.sort(key=lambda x: calendar.timegm(x[1].get("published_parsed") or time.gmtime(0)))
     posted = 0
+    limit = BACKFILL_MAX if BACKFILL_DAYS else MAX_POSTS
+    if BACKFILL_DAYS:
+        print(f"backfill: {len(new_items)} სიახლე ბოლო {BACKFILL_DAYS} დღეში, ვპოსტავ მაქს. {limit}")
+        new_items = new_items[-limit:]   # ყველაზე ახლები, ძველიდან ახლისკენ
     for feed, e in new_items:
-        if posted >= MAX_POSTS: break   # დანარჩენი შემდეგ გაშვებაზე
+        if posted >= limit: break   # დანარჩენი შემდეგ გაშვებაზე
         try:
             ok = process(feed, e)
         except Exception as ex:
@@ -513,7 +541,7 @@ def main():
             posted += 1
             lst = seen.setdefault(feed["name"], [])
             if e.link not in lst: lst.append(e.link)
-            time.sleep(1.5)
+            time.sleep(4 if BACKFILL_DAYS else 1.5)
     for k in seen:   # ფიდში არსებული ბმულები არასოდეს იშლება; ძველები 1000-მდე
         cur = feed_links.get(k, [])
         posted_or_old = [x for x in seen[k] if x not in set(cur)]
